@@ -262,7 +262,7 @@ def _norm(a: np.ndarray) -> np.ndarray:
     return np.sqrt(np.sum(np.abs(a) ** 2, axis=0))
 
 
-@njit(cache=True)
+@njit(cache=True, fastmath=True)
 def _find_candidate_pairs(
     chroma: np.ndarray,
     power_db: np.ndarray,
@@ -270,54 +270,53 @@ def _find_candidate_pairs(
     min_loop_duration: int,
     max_loop_duration: int,
 ) -> List[Tuple[int, int, float, float]]:
-    """Generates a list of all valid candidate loop pairs using combinations of beat indices,
-    by comparing the notes using the chroma spectrogram and their loudness difference
+    """Generates a list of all valid candidate loop pairs."""
 
-    Args:
-        chroma (np.ndarray): The chroma spectrogram
-        power_db (np.ndarray): The power spectrogram in dB
-        beats (np.ndarray): The frame indices of detected beats
-        min_loop_duration (int): Minimum loop duration (in frames)
-        max_loop_duration (int): Maximum loop duration (in frames)
-
-    Returns:
-        List[Tuple[int, int, float, float]]: A list of tuples containing each candidate loop pair data in the following format (loop_start, loop_end, note_distance, loudness_difference)
-    """
-    candidate_pairs = []
-
-    # Magic constants
-    ## Mainly found through trial and error,
-    ## higher values typically result in the inclusion of musically unrelated beats/notes
     ACCEPTABLE_NOTE_DEVIATION = 0.0875
-    ## Since the _db_diff comparison is takes a perceptually weighted power_db frame,
-    ## the difference should be imperceptible (ideally, close to 0)
-    ## Based on trial and error, values higher than ~0.5 have a perceptible
-    ## difference in loudness
     ACCEPTABLE_LOUDNESS_DIFFERENCE = 0.5
 
-    deviation = _norm(chroma[..., beats] * ACCEPTABLE_NOTE_DEVIATION)
+    # Precompute arrays at beat indices (avoids repeated fancy indexing)
+    chroma_beats = chroma[:, beats]
+    power_beats = power_db[:, beats]
+    n_beats = len(beats)
 
-    for idx, loop_end in enumerate(beats):
-        for loop_start in beats:
+    # Deviation thresholds per beat (inlined _norm)
+    deviation = np.sqrt(np.sum((chroma_beats * ACCEPTABLE_NOTE_DEVIATION) ** 2, axis=0))
+
+    candidate_pairs = []
+
+    for end_idx in range(n_beats):
+        loop_end = beats[end_idx]
+        chroma_end = chroma_beats[:, end_idx]
+        power_max_end = power_beats[:, end_idx].max()  # Hoist out of inner loop
+        threshold = deviation[end_idx]
+
+        for start_idx in range(n_beats):
+            loop_start = beats[start_idx]
             loop_length = loop_end - loop_start
+
             if loop_length < min_loop_duration:
                 break
             if loop_length > max_loop_duration:
                 continue
-            note_distance = _norm(chroma[..., loop_end] - chroma[..., loop_start])
 
-            if note_distance <= deviation[idx]:
-                loudness_difference = _db_diff(
-                    power_db[..., loop_end], power_db[..., loop_start]
-                )
-                loop_pair = (
-                    int(loop_start),
-                    int(loop_end),
-                    note_distance,
-                    loudness_difference,
-                )
-                if loudness_difference <= ACCEPTABLE_LOUDNESS_DIFFERENCE:
-                    candidate_pairs.append(loop_pair)
+            # Inlined _norm: np.dot is faster than np.sum(x**2)
+            diff = chroma_end - chroma_beats[:, start_idx]
+            note_distance = np.sqrt(np.dot(diff, diff))
+
+            if note_distance <= threshold:
+                # Inlined _db_diff
+                loudness_diff = abs(power_max_end - power_beats[:, start_idx].max())
+
+                if loudness_diff <= ACCEPTABLE_LOUDNESS_DIFFERENCE:
+                    candidate_pairs.append(
+                        (
+                            int(loop_start),
+                            int(loop_end),
+                            note_distance,
+                            loudness_diff,
+                        )
+                    )
 
     return candidate_pairs
 
