@@ -1,0 +1,75 @@
+# .cursorrules
+
+# -----------------------------------------------------------------------------
+# PROJECT CONTEXT & PHILOSOPHY
+# -----------------------------------------------------------------------------
+# Name: PyMusicLooper
+# Description: Audio analysis tool for creating seamless music loops using Python (Librosa, NumPy).
+# Core Philosophy: "Less code, fewer bugs." Minimalist, performance-aware, data-oriented.
+# Key Standards:
+#   - Practice > Theory.
+#   - Explicit error handling (no hidden exceptions).
+#   - Snake_case everywhere (files, variables, functions).
+#   - Flat architecture over complex OOP hierarchies.
+
+# -----------------------------------------------------------------------------
+# TECH STACK & TOOLING
+# -----------------------------------------------------------------------------
+# - Language: Python 3.13+
+# - Build System: Hatchling
+# - Package Manager: uv (Use `uv` for all dependency/environment operations)
+# - Linting/Formatting: Ruff (configured in pyproject.toml)
+# - Key Libraries: librosa, numpy, soundfile, rich-click, numba, yt-dlp
+
+# -----------------------------------------------------------------------------
+# CODING GUIDELINES
+# -----------------------------------------------------------------------------
+
+## 1. Naming & Files
+# - FILES: Use `snake_case.py`. Directories must be `kebab-case` or `snake_case` (simple names preferred).
+# - VARIABLES/FUNCTIONS: Strictly `snake_case`.
+# - CLASSES: PascalCase, but keep usage minimal. Prefer data classes or simple structs.
+# - CONSTANTS: SCREAMING_SNAKE_CASE.
+
+## 2. Architecture & Performance
+# - PREFER: Functional approach and data transformations over stateful OOP classes.
+# - DATA: Use `numpy` arrays and specialized structures for audio data.
+# - PERFORMANCE: 
+#   - Be aware of the cost of allocations in hot loops.
+#   - Use `numba` for performance-critical signal processing sections.
+#   - Leverage `lazy-loader` for heavy imports to keep CLI startup fast.
+# - DEPENDENCIES: Maximize reuse of Python's `std` lib and existing heavy dependencies (`librosa`, `numpy`). Avoid adding new small deps.
+
+## 3. Error Handling
+# - RULE: Never silence errors. 
+# - STYLE: Check for errors explicitly. If a function can fail, handle it or propagate it intentionally.
+# - NO: `try: ... except: pass`.
+# - YES: `if not path.exists(): raise FileNotFoundError(f"audio file not found: '{path}'")`
+
+## 4. Logging & Output
+# - STYLE: Unix/clang style. Lowercase messages, explicit quoting for values.
+# - FORMAT: mimic C++ std::quoted. Use single quotes around variable inserts.
+#   - Bad: `logger.info(f"Processing {filename}...")`
+#   - Good: `logger.info(f"processing audio file '{filename}'")`
+#   - Good: `logger.error(f"failed to load stream from url '{url}' => {error}")`
+# - UI: Use `rich` for user-facing terminal output (progress bars, tables).
+
+## 5. Documentation
+# - FORMAT: Markdown for text, Mermaid for diagrams.
+# - DOCSTRINGS: Google style or NumPy style. Concise.
+# - COMMENTS: Explain "why", not "what". Avoid tutorial-style comments.
+
+# -----------------------------------------------------------------------------
+# DEVELOPMENT WORKFLOW
+# -----------------------------------------------------------------------------
+# - RUNNING: `uv run pymusiclooper ...`
+# - TESTING: Write tests for edge cases (silence, corrupt files, weird sample rates).
+# - COMMITS: Semantic commit messages (feat, fix, refactor, perf).
+
+# -----------------------------------------------------------------------------
+# CURSOR BEHAVIOR
+# -----------------------------------------------------------------------------
+# - When generating code, produce production-ready, strictly typed (Python type hints) code.
+# - Do not output "tutorial" text or conversational filler. Give me the code.
+# - If modifying logic, always verify if it breaks `numba` JIT compatibility.
+# - Prioritize existing project patterns found in `pymusiclooper/` directory.
