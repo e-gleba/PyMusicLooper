@@ -507,7 +507,7 @@ class BatchHandler:
     def _cleanup_empty_created_dirs(self):
         dirs_to_check = self._created_dirs
 
-        if os.path.basename(self.output_directory) == DEFAULT_OUTPUT_DIRECTORY_NAME:
+        if os.path.basename(self.output_directory) == DEFAULT_OUTPUT_DIR:
             dirs_to_check += [self.output_directory]
 
         for directory in dirs_to_check:

@@ -289,7 +289,10 @@ def _assess_and_filter_loop_pairs(
     # Calculate test duration in frames (~12 beats)
     seconds_to_test = 12 / (bpm / 60)
     test_offset = mlaudio.samples_to_frames(int(seconds_to_test * mlaudio.rate))
-    test_offset = min(test_offset, chroma.shape[-1] // 4)  # Cap at 25% for short tracks
+
+    # Only adjust for very short tracks where test window exceeds entire track
+    if test_offset > chroma.shape[-1]:
+        test_offset = chroma.shape[-1] // 4
 
     # Prune if needed
     pairs = (
