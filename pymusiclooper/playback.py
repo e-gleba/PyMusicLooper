@@ -1,25 +1,27 @@
 """Module for playback through the terminal"""
+
 import importlib
 import logging
 import signal
 import threading
+from contextlib import contextmanager
+from functools import lru_cache
 
 import numpy as np
 from rich.progress import BarColumn, Progress, TextColumn
 
 from pymusiclooper.console import rich_console
 
-# Lazy-load sounddevice: call `sd()` to return the module.
-# (We use this instead of `lazy-loader`, to get clearer error messages when
-# sounddevice is missing dependencies like PortAudio.)
-_sd = None
+
+@lru_cache(maxsize=1)
 def sd():
-    global _sd
-    _sd = _sd or importlib.import_module("sounddevice")
-    return _sd
+    """Lazy-load sounddevice module."""
+    return importlib.import_module("sounddevice")
+
 
 class PlaybackHandler:
-    """Handler class for initiating looping playback through the terminal."""
+    """Handler class for looping audio playback through the terminal."""
+
     def __init__(self) -> None:
         self.event = threading.Event()
         self.progressbar = Progress(
@@ -31,6 +33,19 @@ class PlaybackHandler:
             transient=True,
             refresh_per_second=2,
         )
+        self.stream = None
+        self.looping = True
+        self.loop_counter = 0
+        self.current_frame = 0
+
+    @contextmanager
+    def _signal_handler(self):
+        """Temporarily override SIGINT with custom loop interrupt handler."""
+        original = signal.signal(signal.SIGINT, self._loop_interrupt_handler)
+        try:
+            yield
+        finally:
+            signal.signal(signal.SIGINT, original)
 
     def play_looping(
         self,
@@ -39,68 +54,45 @@ class PlaybackHandler:
         n_channels: int,
         loop_start: int,
         loop_end: int,
-        start_from=0,
+        start_from: int = 0,
     ) -> None:
-        """Plays an audio track through the terminal with a loop active between the `loop_start` and `loop_end` provided. Ctrl+C to interrupt.
-
-        Args:
-            playback_data (np.ndarray): A numpy array containing the playback audio. Must be in the shape (samples, channels).
-            samplerate (int): The sample rate of the playback
-            n_channels (int): The number of channels for playback
-            loop_start (int): The start point of the loop (in samples)
-            loop_end (int): The end point of the loop (in samples)
-            start_from (int, optional): The offset to start from (in samples). Defaults to 0.
-        """
-        self.loop_counter = 0
-        self.looping = True
-        self.current_frame = start_from
+        """Plays audio with a loop between loop_start and loop_end. Ctrl+C to interrupt."""
 
         total_samples = playback_data.shape[0]
 
-        if loop_start > loop_end:
+        # Validate loop bounds
+        if not (0 <= loop_start < loop_end < total_samples):
             raise ValueError(
-                "Loop parameters are in the wrong order. "
-                f"Loop start: {loop_start}; loop end: {loop_end}."
+                f"Invalid loop bounds: start={loop_start}, end={loop_end}, total={total_samples}"
             )
 
-        is_loop_invalid = (
-            loop_start < 0
-            or loop_start >= total_samples
-            or loop_end < 0
-            or loop_end >= total_samples
-            or loop_start >= loop_end
-        )
+        # Reset state
+        self.loop_counter = 0
+        self.looping = True
+        self.current_frame = start_from
+        self.event.clear()
 
-        if is_loop_invalid:
-            raise ValueError(
-                "Loop parameters are out of bounds. "
-                f"Loop start: {loop_start}; "
-                f"loop end: {loop_end}; "
-                f"total number of samples in audio: {total_samples}."
-            )
+        def callback(outdata, frames, time, status):
+            pos = self.current_frame
+
+            # Check for loop crossing
+            if self.looping and pos + frames > loop_end:
+                pre = loop_end - pos
+                post = frames - pre
+                outdata[:pre] = playback_data[pos:loop_end]
+                outdata[pre:] = playback_data[loop_start : loop_start + post]
+                self.current_frame = loop_start + post
+                self.loop_counter += 1
+            else:
+                end = min(pos + frames, total_samples)
+                chunk = end - pos
+                outdata[:chunk] = playback_data[pos:end]
+                if chunk < frames:
+                    outdata[chunk:] = 0
+                    raise sd().CallbackStop()
+                self.current_frame = end
 
         try:
-
-            def callback(outdata, frames, time, status):
-                chunksize = min(len(playback_data) - self.current_frame, frames)
-
-                # Audio looping logic
-                if self.looping and self.current_frame + frames > loop_end:
-                    pre_loop_index = loop_end - self.current_frame
-                    remaining_frames = frames - (loop_end - self.current_frame)
-                    adjusted_next_frame_idx = loop_start + remaining_frames
-                    outdata[:pre_loop_index] = playback_data[self.current_frame : loop_end]
-                    outdata[pre_loop_index:frames] = playback_data[loop_start:adjusted_next_frame_idx]
-                    self.current_frame = adjusted_next_frame_idx
-                    self.loop_counter += 1
-                    rich_console.print(f"[dim italic yellow]Currently on loop #{self.loop_counter}.[/]", end="\r")
-                else:
-                    outdata[:chunksize] = playback_data[self.current_frame : self.current_frame + chunksize]
-                    self.current_frame += chunksize
-                    if chunksize < frames:
-                        outdata[chunksize:] = 0
-                        raise sd().CallbackStop()
-
             self.stream = sd().OutputStream(
                 samplerate=samplerate,
                 channels=n_channels,
@@ -108,8 +100,7 @@ class PlaybackHandler:
                 finished_callback=self.event.set,
             )
 
-            with self.stream, self.progressbar:
-                # Initialize playback progress bar
+            with self.stream, self.progressbar, self._signal_handler():
                 pbar = self.progressbar.add_task(
                     "Now Playing...",
                     total=total_samples,
@@ -117,40 +108,32 @@ class PlaybackHandler:
                     time_field="",
                 )
 
-                # Override SIGINT/KeyboardInterrupt handler with custom logic for loop handling
-                signal.signal(signal.SIGINT, self._loop_interrupt_handler)
-
-                # Workaround for python issue on Windows
-                # (threading.Event().wait() not interruptable with Ctrl-C on Windows): https://bugs.python.org/issue35935
-                # Set a 0.5 second timeout to handle interrupts in-between
+                # Poll with 0.5s timeout (Windows threading workaround)
                 while not self.event.wait(0.5):
-                    # Update playback progress bar between wait timeouts
-                    time_sec = self.current_frame / samplerate
-                    ftime = f"{time_sec // 60:02.0f}:{time_sec % 60:02.0f}"
+                    t = self.current_frame / samplerate
                     self.progressbar.update(
                         pbar,
                         completed=self.current_frame,
-                        time_field=ftime,
+                        time_field=f"{int(t // 60):02d}:{int(t % 60):02d}",
                         loop_field=(
-                            f"[dim] | Currently on Loop #{self.loop_counter}[/]"
+                            f"[dim] | Loop #{self.loop_counter}[/]"
                             if self.loop_counter
                             else ""
                         ),
                     )
 
-                # Restore default SIGINT handler after playback is stopped
-                signal.signal(signal.SIGINT, signal.default_int_handler)
         except Exception as e:
             logging.error(e)
 
     def _loop_interrupt_handler(self, *args):
         if self.looping:
             self.looping = False
-            rich_console.print("[dim italic yellow](Looping disabled. [red]Ctrl+C[/] again to stop playback.)[/]")
+            rich_console.print(
+                "[dim italic yellow](Looping disabled. Ctrl+C again to stop.)[/]"
+            )
         else:
             self.event.set()
-            self.stream.stop()
-            self.stream.close()
-            rich_console.print("[dim]Playback interrupted by user.[/]")
-            # Restore default SIGINT handler
-            signal.signal(signal.SIGINT, signal.default_int_handler)
+            if self.stream:
+                self.stream.stop()
+                self.stream.close()
+            rich_console.print("[dim]Playback interrupted.[/]")
