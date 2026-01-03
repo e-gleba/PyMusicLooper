@@ -1,4 +1,5 @@
-import os
+from pathlib import Path
+from typing import Tuple
 
 import librosa
 import numpy as np
@@ -7,97 +8,84 @@ from pymusiclooper.exceptions import AudioLoadError
 
 
 class MLAudio:
-    """Wrapper class for loading audio files and containing the necessary audio data for PyMusicLooper."""
+    """Wrapper class for loading audio files for PyMusicLooper."""
 
-    total_duration: int
-    filepath: str
-    filename: str
-    audio: np.ndarray
-    trim_offset: int
-    rate: int
-    playback_audio: np.ndarray
-    n_channels: int
-    length: int
+    __slots__ = (
+        "filepath",
+        "filename",
+        "rate",
+        "total_duration",
+        "trim_offset",
+        "audio",
+        "playback_audio",
+        "n_channels",
+        "length",
+    )
 
-    def __init__(self, filepath: str) -> None:
-        """Initializes the MLAudio object and its data by loading the audio using the filepath provided.
+    def __init__(self, filepath: str | Path) -> None:
+        """Load and initialize audio data from filepath."""
+        path = Path(filepath)
 
-        Args:
-            filepath (str): path to the audio file
-
-        Raises:
-            AudioLoadError: If the file could not be loaded.
-        """
-        # Load the file if it exists
         try:
-            raw_audio, sampling_rate = librosa.load(filepath, sr=None, mono=False)
+            raw_audio, sr = librosa.load(path, sr=None, mono=False)
         except Exception as e:
-            raise AudioLoadError(f"{os.path.basename(filepath)} could not be loaded. It might not contain valid audio data, or is in an supported format.") from e
-
-        self.total_duration = librosa.get_duration(y=raw_audio, sr=sampling_rate)
+            raise AudioLoadError(
+                f"{path.name} could not be loaded. Invalid audio data or unsupported format."
+            ) from e
 
         if raw_audio.size == 0:
-            raise AudioLoadError(f"No audio data could be loaded from \"{filepath}\".")
+            raise AudioLoadError(f'No audio data could be loaded from "{path}".')
 
-        self.filepath = filepath
-        self.filename = os.path.basename(filepath)
+        mono = librosa.to_mono(raw_audio)
 
-        mono_signal = librosa.core.to_mono(raw_audio)
+        if mono.min() == 0 == mono.max():
+            raise AudioLoadError(f'"{path}" contains only silence.')
 
-        if np.min(mono_signal) == 0 and np.max(mono_signal) == 0:
-            raise AudioLoadError(f"\"{filepath}\" only contains silence and cannot be analyzed.")
+        # Normalize and trim
+        mono /= np.abs(mono).max()
+        trimmed, (trim_start, _) = librosa.effects.trim(mono, top_db=40)
 
-        # Normalize audio channels to between -1.0 and +1.0 before analysis
-        mono_signal /= np.max(np.abs(mono_signal))
+        # Store core attributes
+        self.filepath = str(path)
+        self.filename = path.name
+        self.rate = sr
+        self.total_duration = librosa.get_duration(y=raw_audio, sr=sr)
+        self.trim_offset = trim_start
+        self.audio = trimmed
 
-        self.audio, self.trim_offset = librosa.effects.trim(mono_signal, top_db=40)
-        self.trim_offset = self.trim_offset[0]
-
-        self.rate = sampling_rate
-
-        # Initialize parameters for playback
-        self.playback_audio = raw_audio
-        # Mono if the loaded audio is 1-D, else get the number of channels from the shape (n_channels, samples)
-        self.n_channels = (
-            1 if len(self.playback_audio.shape) == 1 else self.playback_audio.shape[0]
-        )
-        # Convert the audio array into one suitable for playback
-        # New shape: (samples, n_channels)
-        self.playback_audio = self.playback_audio.T if self.n_channels > 1 else self.playback_audio[:, np.newaxis]
+        # Prepare playback audio: shape (samples, channels)
+        self.n_channels = 1 if raw_audio.ndim == 1 else raw_audio.shape[0]
+        self.playback_audio = np.atleast_2d(raw_audio).T
         self.length = self.playback_audio.shape[0]
 
-    def apply_trim_offset(self, frame):
-        return (
-            librosa.samples_to_frames(
-                librosa.frames_to_samples(frame) + self.trim_offset
-            )
-            if self.trim_offset
-            else frame
-        )
+    def apply_trim_offset(self, frame: int) -> int:
+        if not self.trim_offset:
+            return frame
+        samples = librosa.frames_to_samples(frame) + self.trim_offset
+        return librosa.samples_to_frames(samples)
 
-    def samples_to_frames(self, samples):
-        return librosa.core.samples_to_frames(samples)
+    def samples_to_frames(self, samples: int) -> int:
+        return librosa.samples_to_frames(samples)
 
-    def samples_to_seconds(self, samples):
-        return librosa.core.samples_to_time(samples, sr=self.rate)
+    def samples_to_seconds(self, samples: int) -> float:
+        return librosa.samples_to_time(samples, sr=self.rate)
 
-    def frames_to_samples(self, frame):
-        return librosa.core.frames_to_samples(frame)
+    def frames_to_samples(self, frame: int) -> int:
+        return librosa.frames_to_samples(frame)
 
-    def seconds_to_frames(self, seconds, apply_trim_offset=False):
+    def seconds_to_frames(self, seconds: float, apply_trim_offset: bool = False) -> int:
         if apply_trim_offset:
-            seconds = seconds - librosa.core.samples_to_time(
-                self.trim_offset, sr=self.rate
-            )
-        return librosa.core.time_to_frames(seconds, sr=self.rate)
+            seconds -= librosa.samples_to_time(self.trim_offset, sr=self.rate)
+        return librosa.time_to_frames(seconds, sr=self.rate)
 
-    def seconds_to_samples(self, seconds):
-        return librosa.core.time_to_samples(seconds, sr=self.rate)
+    def seconds_to_samples(self, seconds: float) -> int:
+        return librosa.time_to_samples(seconds, sr=self.rate)
 
-    def frames_to_ftime(self, frame: int):
-        time_sec = librosa.core.frames_to_time(frame, sr=self.rate)
-        return f"{time_sec // 60:02.0f}:{time_sec % 60:06.3f}"
-    
-    def samples_to_ftime(self, samples: int):
-        time_sec = librosa.core.samples_to_time(samples, sr=self.rate)
-        return f"{time_sec // 60:02.0f}:{time_sec % 60:06.3f}"
+    def _format_time(self, seconds: float) -> str:
+        return f"{int(seconds // 60):02d}:{seconds % 60:06.3f}"
+
+    def frames_to_ftime(self, frame: int) -> str:
+        return self._format_time(librosa.frames_to_time(frame, sr=self.rate))
+
+    def samples_to_ftime(self, samples: int) -> str:
+        return self._format_time(librosa.samples_to_time(samples, sr=self.rate))
