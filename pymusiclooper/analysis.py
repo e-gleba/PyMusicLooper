@@ -368,27 +368,14 @@ def _calculate_loop_score(
     test_duration: int,
     weights: Optional[np.ndarray] = None,
 ) -> float:
-    """Calculates the similarity of two sequences given the starting indices `b1` and `b2` for the period of the `test_duration` specified.
-        Returns the best score based on the cosine similarity of subsequent (or preceding) notes.
+    """Returns the best cosine similarity score (lookahead vs lookbehind) for two loop points."""
 
-    Args:
-        b1 (int): Frame index of the first beat to compare
-        b2 (int): Frame index of the second beat to compare
-        chroma (np.ndarray): The chroma spectrogram of the audio
-        test_duration (int): How many frames along the chroma spectrogram to test.
-        weights (np.ndarray, optional): If specified, will provide a weighted average of the note scores according to the weight array provided. Defaults to None.
+    rev_weights = weights[::-1] if weights is not None else None
 
-    Returns:
-        float: the weighted average of the cosine similarity of the notes along the tested region
-    """
-    lookahead_score = _calculate_subseq_beat_similarity(
-        b1, b2, chroma, test_duration, weights=weights
+    return max(
+        _calculate_subseq_beat_similarity(b1, b2, chroma, test_duration, weights),
+        _calculate_subseq_beat_similarity(b1, b2, chroma, -test_duration, rev_weights),
     )
-    lookbehind_score = _calculate_subseq_beat_similarity(
-        b1, b2, chroma, -test_duration, weights=weights[::-1]
-    )
-
-    return max(lookahead_score, lookbehind_score)
 
 
 def _calculate_subseq_beat_similarity(
@@ -398,41 +385,29 @@ def _calculate_subseq_beat_similarity(
     test_end_offset: int,
     weights: Optional[np.ndarray] = None,
 ) -> float:
-    """Calculates the similarity of subsequent notes of the two specified indices (b1_start, b2_start) using cosine similarity
+    """Calculates cosine similarity of subsequent/preceding frames at two positions."""
 
-    Args:
-        b1_start (int): Starting frame index of the first beat to compare
-        b2_start (int): Starting frame index of the second beat to compare
-        chroma (np.ndarray): The chroma spectrogram of the audio
-        test_end_offset (int): The number of frames to offset from the starting index. If negative, will be testing the preceding frames instead of the subsequent frames.
-        weights (np.ndarray, optional): If specified, will provide a weighted average of the note scores according to the weight array provided. Defaults to None.
-
-    Returns:
-        float: the weighted average of the cosine similarity of the notes along the tested region
-    """
     chroma_len = chroma.shape[-1]
-    test_length = abs(test_end_offset)
+    test_len = abs(test_end_offset)
 
-    # Compute slice bounds directly
+    # Compute slice bounds
     if test_end_offset < 0:
-        max_offset = min(test_length, b1_start, b2_start)
-        b1_slice = chroma[..., b1_start - max_offset : b1_start]
-        b2_slice = chroma[..., b2_start - max_offset : b2_start]
+        offset = min(test_len, b1_start, b2_start)
+        s1, s2 = slice(b1_start - offset, b1_start), slice(b2_start - offset, b2_start)
     else:
-        max_offset = min(test_length, chroma_len - b1_start, chroma_len - b2_start)
-        b1_slice = chroma[..., b1_start : b1_start + max_offset]
-        b2_slice = chroma[..., b2_start : b2_start + max_offset]
+        offset = min(test_len, chroma_len - b1_start, chroma_len - b2_start)
+        s1, s2 = slice(b1_start, b1_start + offset), slice(b2_start, b2_start + offset)
 
-    # Cosine similarity per frame (vectorized)
-    dot_prod = np.einsum("ij,ij->j", b1_slice, b2_slice)
-    norm_prod = np.linalg.norm(b1_slice, axis=0) * np.linalg.norm(b2_slice, axis=0)
-    cosine_sim = dot_prod / np.maximum(norm_prod, 1e-10)
+    b1_slice, b2_slice = chroma[:, s1], chroma[:, s2]
 
-    # Pad if needed and return weighted average
-    if max_offset < test_length:
-        cosine_sim = np.pad(
-            cosine_sim, (0, test_length - max_offset), constant_values=0
-        )
+    # Cosine similarity per frame
+    dot = np.einsum("ij,ij->j", b1_slice, b2_slice)
+    norms = np.linalg.norm(b1_slice, axis=0) * np.linalg.norm(b2_slice, axis=0)
+    cosine_sim = dot / np.maximum(norms, 1e-10)
+
+    # Pad with zeros if shorter than expected (penalizes truncated tests)
+    if offset < test_len:
+        cosine_sim = np.pad(cosine_sim, (0, test_len - offset))
 
     return np.average(cosine_sim, weights=weights)
 
