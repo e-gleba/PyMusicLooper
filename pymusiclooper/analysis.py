@@ -502,40 +502,28 @@ def _calculate_subseq_beat_similarity(
     chroma_len = chroma.shape[-1]
     test_length = abs(test_end_offset)
 
+    # Compute slice bounds directly
     if test_end_offset < 0:
-        b1_end = b1_start
-        b2_end = b2_start
-        max_negative_offset = max(test_end_offset, -b1_start, -b2_start)
-        b1_start += max_negative_offset
-        b2_start += max_negative_offset
-        max_offset = abs(max_negative_offset)
+        max_offset = min(test_length, b1_start, b2_start)
+        b1_slice = chroma[..., b1_start - max_offset : b1_start]
+        b2_slice = chroma[..., b2_start - max_offset : b2_start]
     else:
-        # clip to chroma len
-        b1_end = min(b1_start + test_length, chroma_len)
-        b2_end = min(b2_start + test_length, chroma_len)
-        # align testing lengths
-        max_offset = min(b1_end - b1_start, b2_end - b2_start)
-        b1_end, b2_end = (b1_start + max_offset, b2_start + max_offset)
+        max_offset = min(test_length, chroma_len - b1_start, chroma_len - b2_start)
+        b1_slice = chroma[..., b1_start : b1_start + max_offset]
+        b2_slice = chroma[..., b2_start : b2_start + max_offset]
 
-    dot_prod = np.einsum(
-        "ij,ij->j", chroma[..., b1_start:b1_end], chroma[..., b2_start:b2_end]
-    )
-    b1_norm = np.linalg.norm(chroma[..., b1_start:b1_end], axis=0)
-    b2_norm = np.linalg.norm(chroma[..., b2_start:b2_end], axis=0)
-    cosine_sim = dot_prod / (np.maximum(b1_norm * b2_norm, 1e-10))
+    # Cosine similarity per frame (vectorized)
+    dot_prod = np.einsum("ij,ij->j", b1_slice, b2_slice)
+    norm_prod = np.linalg.norm(b1_slice, axis=0) * np.linalg.norm(b2_slice, axis=0)
+    cosine_sim = dot_prod / np.maximum(norm_prod, 1e-10)
 
+    # Pad if needed and return weighted average
     if max_offset < test_length:
-        return np.average(
-            np.pad(
-                cosine_sim,
-                pad_width=(0, test_length - max_offset),
-                mode="constant",
-                constant_values=0,
-            ),
-            weights=weights,
+        cosine_sim = np.pad(
+            cosine_sim, (0, test_length - max_offset), constant_values=0
         )
-    else:
-        return np.average(cosine_sim, weights=weights)
+
+    return np.average(cosine_sim, weights=weights)
 
 
 def _weights(length: int, start: int = 100, stop: int = 1):
