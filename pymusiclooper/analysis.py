@@ -300,36 +300,37 @@ def _prune_candidates(
     candidate_pairs: List[LoopPair],
     keep_top_notes: float = 75,
     keep_top_loudness: float = 50,
-    acceptable_loudness=0.25,
+    acceptable_loudness: float = 0.25,
 ) -> List[LoopPair]:
-    db_diff_array = np.array([pair.loudness_difference for pair in candidate_pairs])
-    note_dist_array = np.array([pair.note_distance for pair in candidate_pairs])
+    """Prunes candidate pairs based on loudness and note distance thresholds."""
 
-    # Minimum value used to avoid issues with tracks with lots of silence
     epsilon = 1e-3
-    min_adjusted_db_diff_array = db_diff_array[db_diff_array > epsilon]
-    min_adjusted_note_dist_array = note_dist_array[note_dist_array > epsilon]
 
-    # Avoid index errors by having at least 3 elements when performing percentile-based pruning
-    # Otherwise, skip by setting the value to the highest available
-    if min_adjusted_db_diff_array.size > 3:
-        db_threshold = np.percentile(min_adjusted_db_diff_array, keep_top_loudness)
-    else:
-        db_threshold = np.max(db_diff_array)
+    db_diff = np.array([p.loudness_difference for p in candidate_pairs])
+    note_dist = np.array([p.note_distance for p in candidate_pairs])
 
-    if min_adjusted_note_dist_array.size > 3:
-        note_dist_threshold = np.percentile(
-            min_adjusted_note_dist_array, keep_top_notes
-        )
-    else:
-        note_dist_threshold = np.max(note_dist_array)
+    # Filter out near-silent samples for percentile calculation
+    db_valid = db_diff[db_diff > epsilon]
+    note_valid = note_dist[note_dist > epsilon]
+
+    # Use percentile if enough samples, else fall back to max
+    db_thresh = (
+        np.percentile(db_valid, keep_top_loudness)
+        if db_valid.size > 3
+        else db_diff.max()
+    )
+    note_thresh = (
+        np.percentile(note_valid, keep_top_notes)
+        if note_valid.size > 3
+        else note_dist.max()
+    )
 
     # Lower values are better
-    indices_that_meet_cond = np.flatnonzero(
-        (db_diff_array <= max(acceptable_loudness, db_threshold))
-        & (note_dist_array <= note_dist_threshold)
-    )
-    return [candidate_pairs[idx] for idx in indices_that_meet_cond]
+    mask = (db_diff <= max(acceptable_loudness, db_thresh)) & (note_dist <= note_thresh)
+
+    from itertools import compress
+
+    return list(compress(candidate_pairs, mask))
 
 
 def _prioritize_duration(pair_list: List[LoopPair]) -> List[LoopPair]:
