@@ -333,30 +333,32 @@ def _prune_candidates(
     return list(compress(candidate_pairs, mask))
 
 
-def _prioritize_duration(pair_list: List[LoopPair]) -> List[LoopPair]:
-    db_diff_array = np.array([pair.loudness_difference for pair in pair_list])
-    db_threshold = np.median(db_diff_array)
+def _prioritize_duration(pair_list: List[LoopPair]) -> None:
+    """Promotes the longest high-scoring loop to the front of the list (in-place)."""
 
-    duration_argmax = 0
-    duration_max = 0
+    if len(pair_list) < 2:
+        return
 
-    score_array = np.array([pair.score for pair in pair_list])
-    score_threshold = np.percentile(score_array, 90)
+    db_diff = np.array([p.loudness_difference for p in pair_list])
+    scores = np.array([p.score for p in pair_list])
 
-    # Must be a negligible difference from the top score
-    score_threshold = max(score_threshold, pair_list[0].score - 1e-4)
+    db_thresh = np.median(db_diff)
+    score_thresh = max(np.percentile(scores, 90), pair_list[0].score - 1e-4)
 
-    # Since pair_list is already sorted
-    # Break the loop if the condition is not met
+    # Find longest duration among top-scoring, low-loudness pairs
+    best_idx, best_dur = 0, 0
+
     for idx, pair in enumerate(pair_list):
-        if pair.score < score_threshold:
-            break
-        duration = pair.loop_end - pair.loop_start
-        if duration > duration_max and pair.loudness_difference <= db_threshold:
-            duration_max, duration_argmax = duration, idx
+        if pair.score < score_thresh:
+            break  # List is sorted by score; no need to continue
 
-    if duration_argmax:
-        pair_list.insert(0, pair_list.pop(duration_argmax))
+        duration = pair.loop_end - pair.loop_start
+        if duration > best_dur and pair.loudness_difference <= db_thresh:
+            best_idx, best_dur = idx, duration
+
+    # Move best to front if not already there
+    if best_idx:
+        pair_list.insert(0, pair_list.pop(best_idx))
 
 
 def _calculate_loop_score(
