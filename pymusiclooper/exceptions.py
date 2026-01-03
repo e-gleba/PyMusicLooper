@@ -1,8 +1,6 @@
 class LoopNotFoundError(Exception):
-    def __init__(self, message):
-        super().__init__(message)
+    """Raised when no valid loop points are found."""
 
 
 class AudioLoadError(Exception):
-    def __init__(self, message):
-        super().__init__(message)
+    """Raised when audio file cannot be loaded or is invalid."""
