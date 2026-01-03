@@ -267,54 +267,33 @@ def _assess_and_filter_loop_pairs(
     candidate_pairs: List[LoopPair],
     disable_pruning: bool = False,
 ) -> List[LoopPair]:
-    """Assigns the scores to each loop pair and prunes the list of candidate loop pairs
+    """Assigns scores to each loop pair and prunes the candidate list."""
 
-    Args:
-        mlaudio (MLAudio): MLAudio object of the track being analyzed
-        chroma (np.ndarray): The chroma spectrogram
-        bpm (float): The estimated bpm/tempo of the track
-        candidate_pairs (List[LoopPair]): The list of candidate loop pairs found
-        disable_pruning (bool, optional): Returns all the candidate loop points without filtering. Defaults to False.
-
-    Returns:
-        List[LoopPair]: A scored and filtered list of valid loop candidate pairs
-    """
-    beats_per_second = bpm / 60
-    num_test_beats = 12
-    seconds_to_test = num_test_beats / beats_per_second
+    # Calculate test duration in frames (~12 beats)
+    seconds_to_test = 12 / (bpm / 60)
     test_offset = mlaudio.samples_to_frames(int(seconds_to_test * mlaudio.rate))
+    test_offset = min(test_offset, chroma.shape[-1] // 4)  # Cap at 25% for short tracks
 
-    # adjust offset for very short tracks to 25% of its length
-    if test_offset > chroma.shape[-1]:
-        test_offset = chroma.shape[-1] // 4
+    # Prune if needed
+    pairs = (
+        _prune_candidates(candidate_pairs)
+        if len(candidate_pairs) >= 100 and not disable_pruning
+        else candidate_pairs
+    )
 
-    # Prune candidates if there are too many
-    if len(candidate_pairs) >= 100 and not disable_pruning:
-        pruned_candidate_pairs = _prune_candidates(candidate_pairs)
-    else:
-        pruned_candidate_pairs = candidate_pairs
+    weights = _weights(test_offset, start=max(2, test_offset // 12), stop=1)
 
-    weights = _weights(test_offset, start=max(2, test_offset // num_test_beats), stop=1)
-
-    pair_score_list = [
-        _calculate_loop_score(
-            int(pair._loop_start_frame_idx),
-            int(pair._loop_end_frame_idx),
+    # Score and assign in single pass
+    for pair in pairs:
+        pair.score = _calculate_loop_score(
+            pair._loop_start_frame_idx,
+            pair._loop_end_frame_idx,
             chroma,
             test_duration=test_offset,
             weights=weights,
         )
-        for pair in pruned_candidate_pairs
-    ]
-    # Add cosine similarity as score
-    for pair, score in zip(pruned_candidate_pairs, pair_score_list):
-        pair.score = score
 
-    # re-sort based on new score
-    pruned_candidate_pairs = sorted(
-        pruned_candidate_pairs, reverse=True, key=lambda x: x.score
-    )
-    return pruned_candidate_pairs
+    return sorted(pairs, key=lambda p: p.score, reverse=True)
 
 
 def _prune_candidates(
