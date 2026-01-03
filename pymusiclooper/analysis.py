@@ -216,43 +216,34 @@ def find_best_loop_points(
 
 
 def _analyze_audio(
-    mlaudio: MLAudio, skip_beat_analysis=False
+    mlaudio: MLAudio, skip_beat_analysis: bool = False
 ) -> Tuple[np.ndarray, np.ndarray, float, np.ndarray]:
-    """Performs the main audio analysis required
+    """Performs the main audio analysis required."""
+    S = librosa.stft(y=mlaudio.audio)
+    S_power = S.real**2 + S.imag**2  # Faster than np.abs(S)**2
 
-    Args:
-        mlaudio (MLAudio): the MLAudio object to perform analysis on
-        skip_beat_analysis (bool, optional): Skips beat analysis if true and returns None for bpm and beats. Defaults to False.
+    freqs = librosa.fft_frequencies(sr=mlaudio.rate)
+    S_weighted = librosa.perceptual_weighting(S=S_power, frequencies=freqs)
 
-    Returns:
-        Tuple[np.ndarray, np.ndarray, float, np.ndarray]: a tuple containing the (chroma spectrogram, power spectrogram in dB, tempo/bpm, frame indices of detected beats)
-    """
-    S = librosa.core.stft(y=mlaudio.audio)
-    S_power = np.abs(S) ** 2
-    S_weighed = librosa.core.perceptual_weighting(
-        S=S_power, frequencies=librosa.fft_frequencies(sr=mlaudio.rate)
-    )
-    mel_spectrogram = librosa.feature.melspectrogram(
-        S=S_weighed, sr=mlaudio.rate, n_mels=128, fmax=8000
+    mel_spec = librosa.feature.melspectrogram(
+        S=S_weighted, sr=mlaudio.rate, n_mels=128, fmax=8000
     )
     chroma = librosa.feature.chroma_stft(S=S_power)
-    power_db = librosa.power_to_db(S_weighed, ref=np.median)
+    power_db = librosa.power_to_db(S_weighted, ref=np.median)
 
     if skip_beat_analysis:
         return chroma, power_db, None, None
 
     try:
-        onset_env = librosa.onset.onset_strength(S=mel_spectrogram)
+        onset_env = librosa.onset.onset_strength(S=mel_spec)
 
         pulse = librosa.beat.plp(onset_envelope=onset_env)
         beats_plp = np.flatnonzero(librosa.util.localmax(pulse))
         bpm, beats = librosa.beat.beat_track(onset_envelope=onset_env)
 
-        beats = np.union1d(beats, beats_plp)
-        beats = np.sort(beats)
+        beats = np.union1d(beats, beats_plp)  # Already returns sorted unique
+        bpm = bpm.item() if isinstance(bpm, np.ndarray) else bpm
 
-        if isinstance(bpm, np.ndarray):
-            bpm = bpm[0]
     except Exception as e:
         raise LoopNotFoundError(
             f'Beat analysis failed for "{mlaudio.filename}". Cannot continue.'
