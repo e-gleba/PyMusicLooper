@@ -128,9 +128,13 @@ def find_best_loop_points(
         bpm = 120.0
         beats = np.arange(start=0, stop=chroma.shape[-1], step=1, dtype=int)
         logging.info(f"Overriding number of frames to check with: {beats.size}")
-        logging.info(f"Estimated iterations required using brute force: {int(beats.size*beats.size*(1-(min_loop_duration/chroma.shape[-1])))}")
-        logging.info("**NOTICE** The program may appear frozen, but processing will continue in the background. This operation may take several minutes to complete.")
-    else: # normal mode of operation
+        logging.info(
+            f"Estimated iterations required using brute force: {int(beats.size*beats.size*(1-(min_loop_duration/chroma.shape[-1])))}"
+        )
+        logging.info(
+            "**NOTICE** The program may appear frozen, but processing will continue in the background. This operation may take several minutes to complete."
+        )
+    else:  # normal mode of operation
         chroma, power_db, bpm, beats = _analyze_audio(mlaudio)
         logging.info(f"Detected {beats.size} beats at {bpm:.0f} bpm")
 
@@ -165,7 +169,7 @@ def find_best_loop_points(
 
     if not candidate_pairs:
         raise LoopNotFoundError(
-            f"No loop points found for \"{mlaudio.filename}\" with current parameters."
+            f'No loop points found for "{mlaudio.filename}" with current parameters.'
         )
 
     filtered_candidate_pairs = _assess_and_filter_loop_pairs(
@@ -190,12 +194,12 @@ def find_best_loop_points(
         pair.loop_start = nearest_zero_crossing(
             mlaudio.playback_audio,
             mlaudio.rate,
-            mlaudio.frames_to_samples(pair._loop_start_frame_idx)
+            mlaudio.frames_to_samples(pair._loop_start_frame_idx),
         )
         pair.loop_end = nearest_zero_crossing(
             mlaudio.playback_audio,
             mlaudio.rate,
-            mlaudio.frames_to_samples(pair._loop_end_frame_idx)
+            mlaudio.frames_to_samples(pair._loop_end_frame_idx),
         )
 
     if not filtered_candidate_pairs:
@@ -206,9 +210,7 @@ def find_best_loop_points(
     logging.info(
         f"Filtered to {len(filtered_candidate_pairs)} best candidate loop points"
     )
-    logging.info(
-        f"Total analysis runtime: {time.perf_counter() - runtime_start:.3f}s"
-    )
+    logging.info(f"Total analysis runtime: {time.perf_counter() - runtime_start:.3f}s")
 
     return filtered_candidate_pairs
 
@@ -252,18 +254,20 @@ def _analyze_audio(
         if isinstance(bpm, np.ndarray):
             bpm = bpm[0]
     except Exception as e:
-        raise LoopNotFoundError(f"Beat analysis failed for \"{mlaudio.filename}\". Cannot continue.") from e
+        raise LoopNotFoundError(
+            f'Beat analysis failed for "{mlaudio.filename}". Cannot continue.'
+        ) from e
 
     return chroma, power_db, bpm, beats
 
 
-@njit
+@njit(fastmath=True, cache=True)
 def _db_diff(power_db_f1: np.ndarray, power_db_f2: np.ndarray) -> float:
-    return np.abs(np.max(power_db_f1) - np.max(power_db_f2))
+    return abs(power_db_f1.max() - power_db_f2.max())
 
 
-@njit
-def _norm(a: np.ndarray) -> float:
+@njit(fastmath=True, cache=True)
+def _norm(a: np.ndarray) -> np.ndarray:
     return np.sqrt(np.sum(np.abs(a) ** 2, axis=0))
 
 
@@ -401,9 +405,7 @@ def _prune_candidates(
     # Avoid index errors by having at least 3 elements when performing percentile-based pruning
     # Otherwise, skip by setting the value to the highest available
     if min_adjusted_db_diff_array.size > 3:
-        db_threshold = np.percentile(
-            min_adjusted_db_diff_array, keep_top_loudness
-        )
+        db_threshold = np.percentile(min_adjusted_db_diff_array, keep_top_loudness)
     else:
         db_threshold = np.max(db_diff_array)
 
@@ -416,7 +418,8 @@ def _prune_candidates(
 
     # Lower values are better
     indices_that_meet_cond = np.flatnonzero(
-        (db_diff_array <= max(acceptable_loudness, db_threshold)) & (note_dist_array <= note_dist_threshold)
+        (db_diff_array <= max(acceptable_loudness, db_threshold))
+        & (note_dist_array <= note_dist_threshold)
     )
     return [candidate_pairs[idx] for idx in indices_that_meet_cond]
 
@@ -523,7 +526,12 @@ def _calculate_subseq_beat_similarity(
 
     if max_offset < test_length:
         return np.average(
-            np.pad(cosine_sim, pad_width=(0, test_length - max_offset), mode="constant", constant_values=0),
+            np.pad(
+                cosine_sim,
+                pad_width=(0, test_length - max_offset),
+                mode="constant",
+                constant_values=0,
+            ),
             weights=weights,
         )
     else:
