@@ -72,20 +72,11 @@ class PlaybackHandler:
         self.current_frame = start_from
         self.event.clear()
 
-        def callback(
-            outdata: np.ndarray,
-            frames: int,
-            time,
-            status,
-        ) -> None:
-            pos: int = self.current_frame
-            looping: bool = self.looping
-            loop_end: int = self.loop_end
-            loop_start: int = self.loop_start
-            playback_data: np.ndarray = self.playback_data  # C-contiguous, float32
-            total_samples: int = self.total_samples
+        def callback(outdata, frames, time, status):
+            pos = self.current_frame
 
-            if looping and pos + frames > loop_end:
+            # Check for loop crossing
+            if self.looping and pos + frames > loop_end:
                 pre = loop_end - pos
                 post = frames - pre
                 outdata[:pre] = playback_data[pos:loop_end]
@@ -94,11 +85,11 @@ class PlaybackHandler:
                 self.loop_counter += 1
             else:
                 end = min(pos + frames, total_samples)
-                available = end - pos
-                outdata[:available] = playback_data[pos:end]
-                if available < frames:
-                    outdata[available:].fill(0)  # Fast zero-fill
-                    raise sd.CallbackStop()
+                chunk = end - pos
+                outdata[:chunk] = playback_data[pos:end]
+                if chunk < frames:
+                    outdata[chunk:] = 0
+                    raise sd().CallbackStop()
                 self.current_frame = end
 
         try:
