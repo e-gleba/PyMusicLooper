@@ -1,8 +1,10 @@
+from __future__ import annotations
+
 import logging
 import os
 import sys
 from contextlib import contextmanager
-from typing import List, Literal, Optional, Tuple
+from typing import List, Literal, Optional, Tuple, Iterator
 
 from rich.progress import MofNCompleteColumn, Progress, SpinnerColumn, TimeElapsedColumn
 from rich.table import Table
@@ -513,27 +515,25 @@ class BatchHandler:
 
 
 @contextmanager
-def _hideprogressbar(progress: Progress):
-    """
-    Intended to pause and hide the progress bar while a prompt is active.
-
-    Based on @abrahammurciano's answer in rich issue #1535
-    https://github.com/Textualize/rich/issues/1535#issuecomment-1745297594
-    """
-    # Handle edge case where a progressbar might not exist
+def _hideprogressbar(progress: Progress | None) -> Iterator[None]:
     if progress is None:
-        try:
-            yield
-        finally:
-            pass
+        yield
         return
-    transient = progress.live.transient  # save the old value
-    progress.live.transient = True
+
+    live = progress.live
+    original_transient = live.transient
+    live.transient = True
     progress.stop()
+
     try:
         yield
     finally:
-        # make space for the progress to use so it doesn't overwrite any previous lines
-        print("\n" * (len(progress.tasks) - 2))
-        progress.live.transient = transient  # restore the old value
-        progress.start()
+        try:
+            task_count = len(progress.tasks)
+            spacing_lines = max(0, task_count - 2)
+            if spacing_lines > 0:
+                print("\n" * spacing_lines)
+            live.transient = original_transient
+            progress.start()
+        except Exception as e:
+            print(f"Warning: Progress bar restoration failed: {e}")

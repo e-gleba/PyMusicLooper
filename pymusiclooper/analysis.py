@@ -33,7 +33,7 @@ class LoopPair:
 
 
 def find_best_loop_points(
-    mlaudio: MLAudio,
+    mlaudio: "MLAudio",
     min_duration_multiplier: float = 0.35,
     min_loop_duration: Optional[float] = None,
     max_loop_duration: Optional[float] = None,
@@ -41,12 +41,9 @@ def find_best_loop_points(
     approx_loop_end: Optional[float] = None,
     brute_force: bool = False,
     disable_pruning: bool = False,
-) -> List[LoopPair]:
-    """Finds the best loop points for a given audio track."""
-    runtime_start = time.perf_counter()
-    s2f = mlaudio.seconds_to_frames  # Local alias for repeated calls
-
-    # Duration bounds (in frames)
+) -> List["LoopPair"]:
+    t0 = time.perf_counter()
+    s2f = mlaudio.seconds_to_frames
     total_frames = s2f(mlaudio.total_duration)
     min_dur = (
         s2f(min_loop_duration)
@@ -59,17 +56,14 @@ def find_best_loop_points(
     approx_mode = approx_loop_start is not None and approx_loop_end is not None
 
     if approx_mode or brute_force:
-        chroma, power_db, _, _ = _analyze_audio(mlaudio, skip_beat_analysis=True)
+        chroma, power_db, *_ = _analyze_audio(mlaudio, skip_beat_analysis=True)
         bpm = 120.0
-
         if approx_mode:
             start_frame = s2f(approx_loop_start, apply_trim_offset=True)
             end_frame = s2f(approx_loop_end, apply_trim_offset=True)
-            window = s2f(2)  # +/- 2 seconds
-
+            window = s2f(2)
             min_dur = (end_frame - window) - (start_frame + window) - 1
             max_dur = (end_frame + window) - (start_frame - window) + 1
-
             beats = np.concatenate(
                 [
                     np.arange(
@@ -82,35 +76,22 @@ def find_best_loop_points(
                     ),
                 ]
             )
-        else:  # brute_force
+        else:
             beats = np.arange(chroma.shape[-1], dtype=int)
-            n_iter = int(beats.size**2 * (1 - min_dur / chroma.shape[-1]))
-            logging.info(f"Brute force: {beats.size} frames, ~{n_iter} iterations")
-            logging.info("**NOTICE** Processing may take several minutes.")
     else:
         chroma, power_db, bpm, beats = _analyze_audio(mlaudio)
-        logging.info(f"Detected {beats.size} beats at {bpm:.0f} bpm")
 
-    logging.info(f"Initial processing: {time.perf_counter() - runtime_start:.3f}s")
-
-    # Find candidate pairs
-    t0 = time.perf_counter()
+    # Candidate search (vectorized, no Python loops)
+    pairs = _find_candidate_pairs(chroma, power_db, beats, min_dur, max_dur)
     candidate_pairs = [
         LoopPair(
-            _loop_start_frame_idx=start,
-            _loop_end_frame_idx=end,
-            note_distance=note_dist,
-            loudness_difference=loud_diff,
+            _loop_start_frame_idx=s,
+            _loop_end_frame_idx=e,
+            note_distance=nd,
+            loudness_difference=ld,
         )
-        for start, end, note_dist, loud_diff in _find_candidate_pairs(
-            chroma, power_db, beats, min_dur, max_dur
-        )
+        for s, e, nd, ld in pairs
     ]
-
-    logging.info(
-        f"Found {len(candidate_pairs)} candidates in {time.perf_counter() - t0:.3f}s"
-    )
-
     if not candidate_pairs:
         raise RuntimeError(
             f'No loop points found for "{mlaudio.filename}" with current parameters.'
@@ -119,38 +100,31 @@ def find_best_loop_points(
     filtered = _assess_and_filter_loop_pairs(
         mlaudio, chroma, bpm, candidate_pairs, disable_pruning
     )
-
     if len(filtered) > 1:
         _prioritize_duration(filtered)
 
-    # Adjust to nearest zero crossings
-    for pair in filtered:
-        if mlaudio.trim_offset > 0:
-            pair._loop_start_frame_idx = int(
-                mlaudio.apply_trim_offset(pair._loop_start_frame_idx)
-            )
-            pair._loop_end_frame_idx = int(
-                mlaudio.apply_trim_offset(pair._loop_end_frame_idx)
-            )
+    # Zero-crossing adjustment (fast, in-place)
+    trim_offset = mlaudio.trim_offset
+    playback_audio = mlaudio.playback_audio
+    rate = mlaudio.rate
+    f2s = mlaudio.frames_to_samples
+    apply_trim = mlaudio.apply_trim_offset
 
+    for pair in filtered:
+        if trim_offset > 0:
+            pair._loop_start_frame_idx = int(apply_trim(pair._loop_start_frame_idx))
+            pair._loop_end_frame_idx = int(apply_trim(pair._loop_end_frame_idx))
         pair.loop_start = nearest_zero_crossing(
-            mlaudio.playback_audio,
-            mlaudio.rate,
-            mlaudio.frames_to_samples(pair._loop_start_frame_idx),
+            playback_audio, rate, f2s(pair._loop_start_frame_idx)
         )
         pair.loop_end = nearest_zero_crossing(
-            mlaudio.playback_audio,
-            mlaudio.rate,
-            mlaudio.frames_to_samples(pair._loop_end_frame_idx),
+            playback_audio, rate, f2s(pair._loop_end_frame_idx)
         )
 
     if not filtered:
         raise RuntimeError(
             f'No loop points found for "{mlaudio.filename}" with current parameters.'
         )
-
-    logging.info(f"Filtered to {len(filtered)} best candidates")
-    logging.info(f"Total runtime: {time.perf_counter() - runtime_start:.3f}s")
 
     return filtered
 
